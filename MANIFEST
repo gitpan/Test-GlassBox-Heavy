@@ -1,0 +1,10 @@
+lib/Test/GlassBox/Heavy.pm
+MANIFEST
+README
+INSTALL
+Makefile.PL
+Changes
+META.yml
+t/pod.t
+t/pod-coverage.t
+t/load.t
