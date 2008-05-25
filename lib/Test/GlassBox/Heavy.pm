@@ -14,8 +14,23 @@ use Devel::Symdump;
 use File::Slurp;
 use Carp;
 
-our $VERSION = 0.03;
-# $Id: Heavy.pm 172 2008-05-19 14:16:27Z oliver $
+our $VERSION = 0.04;
+# $Id: Heavy.pm 175 2008-05-25 22:14:24Z oliver $
+
+our @used_modules;
+BEGIN {
+    unshift @INC, \&trace_use
+        unless grep { "$_" eq \&trace_use . '' } @INC;
+}
+
+sub trace_use {
+    my ($code, $module) = @_;
+    (my $mod_name = $module) =~ s{/}{::};
+    $mod_name =~ s/\.pm$//;
+
+    push @used_modules, $mod_name;
+    return undef;
+}
 
 sub load_subs {
     my $text = read_file( shift );
@@ -26,25 +41,51 @@ sub load_subs {
     my $opts = shift || {};
     $opts->{exit}   ||= sub { $_[0] ||= 0; die "caught exit($_[0])\n" };
     $opts->{system} ||= sub { system @_ };
-    my $subs = 'use subs qw(exit system)';
 
-    eval "package $pkg; $subs; sub $key { no warnings 'closure'; $text }; 1;"
-        or croak $@;
+    my $subs = 'use subs qw(exit system)';
+    my @used;
+
+    {
+        local @used_modules = ();
+        eval "package $pkg; $subs; sub $key { no warnings 'closure'; $text; }; 1;"
+            or croak $@;
+        @used = @used_modules;
+    }
 
     *{qualify_to_ref($_,$pkg)} = $opts->{$_} for (qw(exit system));
-
     my %globals = %{ [peek_my(1)]->[0] };
 
     foreach my $qsub ( Devel::Symdump->functions($pkg) ) {
         (my $sub = $qsub) =~ s/^${pkg}:://;
         next if $sub eq $key;
-    
-        my @vars = keys %{ [closed_over \&{$main::{"${pkg}::"}{$sub}}]->[0] };
+
+        my $subref = get_subref($sub, $pkg);
+        my @vars = keys %{ [closed_over $subref]->[0] };
+
         foreach my $v (@vars) {
-            croak "Missing lexical for \"$v\" required by \"$sub\""
-                if !exists $globals{$v};
-            lexalias(\&{$main::{"${pkg}::"}{$sub}} , $v, $globals{$v});
+            if (not_external($pkg, $sub, @used)) {
+                if (exists $globals{$v}) {
+                    lexalias($subref, $v, $globals{$v});
+                }
+                else {
+                    croak qq(Missing lexical for "$v" required by "$sub");
+                }
+            }
         }
+    }
+
+    return 1;
+}
+
+sub not_external {
+    my ($p, $s, @used) = @_;
+
+    foreach my $pack (@used) {
+        next unless scalar grep {$_ eq "${pack}::$s"}
+                                (Devel::Symdump->functions($pack));
+        return 0 if
+            get_subref($s, $pack) eq get_subref($s, $p);
+            # subref in used package equal to subref in hack package
     }
 
     return 1;
@@ -53,7 +94,13 @@ sub load_subs {
 sub get_subref {
     my $sub = shift;
     my $pkg = shift || scalar caller(0);
-    return \&{$main::{"${pkg}::"}{$sub}};
+
+    my $symtbl = \%{main::};
+    foreach my $part(split /::/, $pkg) {
+        $symtbl = $symtbl->{"${part}::"};
+    }
+
+    return eval{ \&{ $symtbl->{$sub} } };
 }
 
 1;
@@ -66,7 +113,7 @@ Test::GlassBox::Heavy - Non-invasive testing of subroutines within Perl programs
 
 =head1 VERSION
 
-This document refers to version 0.03 of Test::GlassBox::Heavy
+This document refers to version 0.04 of Test::GlassBox::Heavy
 
 =head1 SYNOPSIS
 
